@@ -1,0 +1,378 @@
+-- =========================================================
+-- schema.sql
+-- Full schema for a manager's team-management desktop app
+-- SQLite 3 / Tkinter
+-- =========================================================
+--
+-- NOTE ON SENSITIVE DATA:
+-- This schema stores employee PII (contact info, emergency contacts,
+-- HR dates). Do not store SSNs, medical information, or anything
+-- covered by privacy/HIPAA regulations without confirming this
+-- storage approach is authorized for that data class. This file
+-- is a starting point, not a compliance decision.
+-- =========================================================
+
+PRAGMA foreign_keys = ON;
+
+-- -------------------------------------------------
+-- Table: managers  (the people who log in to the app)
+-- -------------------------------------------------
+CREATE TABLE IF NOT EXISTS managers (
+    manager_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    username        TEXT NOT NULL UNIQUE,
+    email           TEXT NOT NULL UNIQUE,
+    password_hash   TEXT NOT NULL,          -- bcrypt hash, salt embedded
+
+    first_name      TEXT NOT NULL,
+    last_name       TEXT NOT NULL,
+
+    role            TEXT NOT NULL DEFAULT 'manager'
+                        CHECK (role IN ('admin', 'manager')),
+    is_active       INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    last_login_at   TEXT,
+    is_deleted      INTEGER NOT NULL DEFAULT 0 CHECK (is_deleted IN (0, 1))
+);
+
+CREATE INDEX IF NOT EXISTS idx_managers_username ON managers(username);
+
+
+-- -------------------------------------------------
+-- Table: employees
+-- Each employee reports to one manager (their supervisor of record
+-- in this app). An assistant manager is optional. HR fields live
+-- here since they're 1:1 with the person.
+-- -------------------------------------------------
+CREATE TABLE IF NOT EXISTS employees (
+    employee_id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    manager_id            INTEGER NOT NULL,
+    assistant_manager_id  INTEGER,          -- optional; nullable
+
+    first_name            TEXT NOT NULL,
+    last_name             TEXT NOT NULL,
+    preferred_name        TEXT,
+    birthday              TEXT,             -- ISO date: YYYY-MM-DD
+
+    -- Contact info
+    work_email             TEXT,
+    personal_email          TEXT,
+    phone_number            TEXT,
+    mailing_address_line1   TEXT,
+    mailing_address_line2   TEXT,
+    city                    TEXT,
+    state                   TEXT,
+    zip_code                TEXT,
+
+    -- HR data
+    position_title        TEXT,
+    grade                 TEXT,             -- e.g. GS-12
+    step                  TEXT,             -- e.g. Step 4
+    hire_date             TEXT,             -- ISO date: YYYY-MM-DD
+    time_in_grade_date    TEXT,             -- date current grade/step began
+    next_wgi_date         TEXT,             -- next within-grade increase eligibility
+    promotion_eligible_date TEXT,           -- next promotion eligibility date, if known
+    last_promotion_date   TEXT,
+
+    employment_status     TEXT NOT NULL DEFAULT 'active'
+                              CHECK (employment_status IN ('active', 'extended leave', 'separated')),
+
+    created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at            TEXT NOT NULL DEFAULT (datetime('now')),
+    is_deleted            INTEGER NOT NULL DEFAULT 0 CHECK (is_deleted IN (0, 1)),
+
+    FOREIGN KEY (manager_id) REFERENCES managers(manager_id) ON DELETE RESTRICT,
+    FOREIGN KEY (assistant_manager_id) REFERENCES managers(manager_id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_employees_manager ON employees(manager_id);
+CREATE INDEX IF NOT EXISTS idx_employees_assistant_manager ON employees(assistant_manager_id);
+CREATE INDEX IF NOT EXISTS idx_employees_name ON employees(last_name, first_name);
+
+
+-- -------------------------------------------------
+-- Table: emergency_contacts
+-- One employee can have multiple emergency contacts (primary/secondary)
+-- -------------------------------------------------
+CREATE TABLE IF NOT EXISTS emergency_contacts (
+    contact_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    employee_id     INTEGER NOT NULL,
+
+    contact_name    TEXT NOT NULL,
+    relationship    TEXT,                   -- e.g. Spouse, Parent, Sibling
+    phone_number    TEXT NOT NULL,
+    alt_phone_number TEXT,
+    email           TEXT,
+    is_primary      INTEGER NOT NULL DEFAULT 0 CHECK (is_primary IN (0, 1)),
+
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+
+    FOREIGN KEY (employee_id) REFERENCES employees(employee_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_emerg_contacts_employee ON emergency_contacts(employee_id);
+
+
+-- -------------------------------------------------
+-- Table: leave_records
+-- Individual leave transactions/entries. Hours are calculated from
+-- start_datetime/end_datetime rather than stored, so they can never
+-- drift out of sync.
+-- -------------------------------------------------
+CREATE TABLE IF NOT EXISTS leave_records (
+    leave_id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    employee_id     INTEGER NOT NULL,
+
+    leave_type      TEXT NOT NULL
+                        CHECK (leave_type IN ('annual', 'sick', 'fmla', 'admin', 'unpaid', 'other')),
+    start_datetime  TEXT NOT NULL,          -- ISO datetime: 'YYYY-MM-DD HH:MM'
+    end_datetime    TEXT NOT NULL,          -- ISO datetime: 'YYYY-MM-DD HH:MM'
+
+    status          TEXT NOT NULL DEFAULT 'pending'
+                        CHECK (status IN ('pending', 'approved', 'denied', 'cancelled')),
+    notes           TEXT,
+
+    logged_by_manager_id INTEGER,           -- who entered this record
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+
+    FOREIGN KEY (employee_id) REFERENCES employees(employee_id) ON DELETE CASCADE,
+    FOREIGN KEY (logged_by_manager_id) REFERENCES managers(manager_id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_leave_employee ON leave_records(employee_id);
+CREATE INDEX IF NOT EXISTS idx_leave_dates ON leave_records(start_datetime, end_datetime);
+
+
+-- -------------------------------------------------
+-- Table: review_types
+-- Defines each kind of compliance review and how often it recurs,
+-- so future review events can be auto-scheduled from this rule
+-- rather than entered by hand each time. Frequency is expressed as
+-- a number + unit (days/weeks/months) for flexibility.
+-- -------------------------------------------------
+CREATE TABLE IF NOT EXISTS review_types (
+    review_type_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+
+    name              TEXT NOT NULL UNIQUE,   -- e.g. "Annual Performance Review", "EEO Compliance Check"
+    description       TEXT,
+
+    frequency         INTEGER NOT NULL CHECK (frequency > 0),
+    frequency_unit    TEXT NOT NULL DEFAULT 'weeks'
+                          CHECK (frequency_unit IN ('days', 'weeks', 'months')),
+
+    is_active         INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+
+    created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_review_types_active ON review_types(is_active);
+
+
+-- -------------------------------------------------
+-- Table: compliance_reviews
+-- Scheduled + completed reviews, so you can track fairness of rotation
+-- (e.g. "everyone reviewed within X months"). Each review links back
+-- to a review_type, which drives auto-scheduling of the next occurrence.
+-- -------------------------------------------------
+CREATE TABLE IF NOT EXISTS compliance_reviews (
+    review_id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    employee_id           INTEGER NOT NULL,
+    review_type_id        INTEGER NOT NULL,
+
+    scheduled_date         TEXT NOT NULL,     -- ISO date the review is due/planned
+    completed_date         TEXT,              -- ISO date actually completed (NULL until done)
+    status                 TEXT NOT NULL DEFAULT 'scheduled'
+                              CHECK (status IN ('scheduled', 'completed', 'overdue', 'waived')),
+
+    conducted_by_manager_id INTEGER,
+    summary                 TEXT,             -- brief outcome/notes from the review
+
+    -- Set once this review generates its follow-up, so auto-scheduling
+    -- never double-creates the next occurrence for the same review.
+    next_review_generated   INTEGER NOT NULL DEFAULT 0 CHECK (next_review_generated IN (0, 1)),
+
+    created_at             TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at             TEXT NOT NULL DEFAULT (datetime('now')),
+
+    FOREIGN KEY (employee_id) REFERENCES employees(employee_id) ON DELETE CASCADE,
+    FOREIGN KEY (review_type_id) REFERENCES review_types(review_type_id) ON DELETE RESTRICT,
+    FOREIGN KEY (conducted_by_manager_id) REFERENCES managers(manager_id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_compliance_employee ON compliance_reviews(employee_id);
+CREATE INDEX IF NOT EXISTS idx_compliance_type ON compliance_reviews(review_type_id);
+CREATE INDEX IF NOT EXISTS idx_compliance_scheduled ON compliance_reviews(scheduled_date);
+CREATE INDEX IF NOT EXISTS idx_compliance_status ON compliance_reviews(status);
+
+
+-- -------------------------------------------------
+-- Table: recognition_log
+-- Tracks both informal thank-you notes and formal recognition
+-- submissions. recognition_type is free text by design.
+-- -------------------------------------------------
+CREATE TABLE IF NOT EXISTS recognition_log (
+    recognition_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    employee_id          INTEGER NOT NULL,
+
+    recognition_type     TEXT NOT NULL,       -- free text, e.g. "thank_you_note", "formal_award", or custom
+    title                 TEXT,               -- e.g. award name, or short subject line
+    description           TEXT,               -- the note content / justification
+    date_given            TEXT NOT NULL,      -- ISO date
+
+    submitted_by_manager_id INTEGER,
+    status                TEXT NOT NULL DEFAULT 'given'
+                              CHECK (status IN ('draft', 'submitted', 'approved', 'given', 'denied')),
+
+    created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at            TEXT NOT NULL DEFAULT (datetime('now')),
+
+    FOREIGN KEY (employee_id) REFERENCES employees(employee_id) ON DELETE CASCADE,
+    FOREIGN KEY (submitted_by_manager_id) REFERENCES managers(manager_id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_recognition_employee ON recognition_log(employee_id);
+CREATE INDEX IF NOT EXISTS idx_recognition_date ON recognition_log(date_given);
+
+
+-- -------------------------------------------------
+-- Table: recognition_schedule
+-- One row per employee per expected recognition "slot" per year
+-- (quarterly: Q1-Q4), so gaps are visible in advance rather than
+-- only discovered after the year is over. Note: with 4 slots/year
+-- and a 2x/year minimum, "compliant" means >= 2 fulfilled slots
+-- for the year, not all 4 slots fulfilled.
+-- -------------------------------------------------
+CREATE TABLE IF NOT EXISTS recognition_schedule (
+    schedule_id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    employee_id       INTEGER NOT NULL,
+
+    year              INTEGER NOT NULL,
+    period            TEXT NOT NULL CHECK (period IN ('Q1', 'Q2', 'Q3', 'Q4')),
+
+    window_start_date TEXT NOT NULL,        -- ISO date: start of the target window
+    window_end_date   TEXT NOT NULL,        -- ISO date: end of the target window
+
+    status            TEXT NOT NULL DEFAULT 'pending'
+                          CHECK (status IN ('pending', 'fulfilled', 'missed')),
+
+    fulfilled_by_recognition_id INTEGER,    -- links to the recognition_log row that satisfied this slot
+
+    created_at        TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at        TEXT NOT NULL DEFAULT (datetime('now')),
+
+    FOREIGN KEY (employee_id) REFERENCES employees(employee_id) ON DELETE CASCADE,
+    FOREIGN KEY (fulfilled_by_recognition_id) REFERENCES recognition_log(recognition_id) ON DELETE SET NULL,
+    UNIQUE (employee_id, year, period)      -- prevents duplicate slots for the same employee/period
+);
+
+CREATE INDEX IF NOT EXISTS idx_recog_schedule_employee ON recognition_schedule(employee_id);
+CREATE INDEX IF NOT EXISTS idx_recog_schedule_status ON recognition_schedule(status);
+CREATE INDEX IF NOT EXISTS idx_recog_schedule_window ON recognition_schedule(window_start_date, window_end_date);
+
+
+-- -------------------------------------------------
+-- Table: employee_notes
+-- Freeform notes per employee (1-on-1 notes, general observations).
+-- Kept separate from HR fields so it can grow without cluttering
+-- the employees table.
+-- -------------------------------------------------
+CREATE TABLE IF NOT EXISTS employee_notes (
+    note_id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    employee_id      INTEGER NOT NULL,
+
+    note_text        TEXT NOT NULL,
+    note_date        TEXT NOT NULL DEFAULT (datetime('now')),
+    category         TEXT,                   -- e.g. '1:1', 'performance', 'general'
+
+    created_by_manager_id INTEGER,
+    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+
+    FOREIGN KEY (employee_id) REFERENCES employees(employee_id) ON DELETE CASCADE,
+    FOREIGN KEY (created_by_manager_id) REFERENCES managers(manager_id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_notes_employee ON employee_notes(employee_id);
+CREATE INDEX IF NOT EXISTS idx_notes_date ON employee_notes(note_date);
+
+
+-- -------------------------------------------------
+-- Seed data: starter review types (edit/add as needed)
+-- -------------------------------------------------
+INSERT OR IGNORE INTO review_types (name, description, frequency, frequency_unit)
+VALUES
+    ('Annual Performance Review', 'Standard yearly performance evaluation.', 12, 'months'),
+    ('Mid-Year Check-In', 'Informal progress review halfway through the cycle.', 6, 'months'),
+    ('Compliance', 'WATRS/VATAS Compliance', 6, 'weeks');
+
+
+-- -------------------------------------------------
+-- Triggers: keep updated_at fresh on modification
+-- -------------------------------------------------
+CREATE TRIGGER IF NOT EXISTS trg_managers_updated_at
+AFTER UPDATE ON managers
+FOR EACH ROW
+BEGIN
+    UPDATE managers SET updated_at = datetime('now') WHERE manager_id = OLD.manager_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_employees_updated_at
+AFTER UPDATE ON employees
+FOR EACH ROW
+BEGIN
+    UPDATE employees SET updated_at = datetime('now') WHERE employee_id = OLD.employee_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_emerg_contacts_updated_at
+AFTER UPDATE ON emergency_contacts
+FOR EACH ROW
+BEGIN
+    UPDATE emergency_contacts SET updated_at = datetime('now') WHERE contact_id = OLD.contact_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_leave_updated_at
+AFTER UPDATE ON leave_records
+FOR EACH ROW
+BEGIN
+    UPDATE leave_records SET updated_at = datetime('now') WHERE leave_id = OLD.leave_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_review_types_updated_at
+AFTER UPDATE ON review_types
+FOR EACH ROW
+BEGIN
+    UPDATE review_types SET updated_at = datetime('now') WHERE review_type_id = OLD.review_type_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_compliance_updated_at
+AFTER UPDATE ON compliance_reviews
+FOR EACH ROW
+BEGIN
+    UPDATE compliance_reviews SET updated_at = datetime('now') WHERE review_id = OLD.review_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_recognition_updated_at
+AFTER UPDATE ON recognition_log
+FOR EACH ROW
+BEGIN
+    UPDATE recognition_log SET updated_at = datetime('now') WHERE recognition_id = OLD.recognition_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_recog_schedule_updated_at
+AFTER UPDATE ON recognition_schedule
+FOR EACH ROW
+BEGIN
+    UPDATE recognition_schedule SET updated_at = datetime('now') WHERE schedule_id = OLD.schedule_id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS trg_notes_updated_at
+AFTER UPDATE ON employee_notes
+FOR EACH ROW
+BEGIN
+    UPDATE employee_notes SET updated_at = datetime('now') WHERE note_id = OLD.note_id;
+END;
