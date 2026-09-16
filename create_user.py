@@ -12,6 +12,7 @@ from other scripts / the Tkinter app.
 import sqlite3
 from db import get_connection
 from auth import hash_password
+from review_scheduling import schedule_initial_reviews
 
 
 # =========================================================
@@ -112,13 +113,14 @@ def create_employee(
             ),
         )
         conn.commit()
-        return cursor.lastrowid
+        new_employee_id = cursor.lastrowid
     finally:
         conn.close()
 
+    # Auto-schedule the employee's first review for each active review type
+    schedule_initial_reviews(new_employee_id, hire_date=hire_date)
 
-# =========================================================
-# Employee read / update / deactivate
+    return new_employee_id
 # =========================================================
 def get_all_employees(manager_id: int = None):
     """
@@ -130,8 +132,8 @@ def get_all_employees(manager_id: int = None):
         if manager_id is not None:
             return conn.execute(
                 """
-                SELECT employee_id, first_name, last_name, position_title,
-                       employment_status, hire_date, preferred_name
+                SELECT employee_id, first_name, last_name, preferred_name,
+                       position_title, employment_status, hire_date
                 FROM employees
                 WHERE is_deleted = 0 AND manager_id = ?
                 ORDER BY last_name, first_name
@@ -140,8 +142,8 @@ def get_all_employees(manager_id: int = None):
             ).fetchall()
         return conn.execute(
             """
-            SELECT employee_id, first_name, last_name, position_title,
-                   employment_status, hire_date
+            SELECT employee_id, first_name, last_name, preferred_name,
+                   position_title, employment_status, hire_date
             FROM employees
             WHERE is_deleted = 0
             ORDER BY last_name, first_name

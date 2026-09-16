@@ -24,6 +24,8 @@
   <ItemGroup>
     <Compile Include="auth.py" />
     <Compile Include="auth_manager.py" />
+    <Compile Include="compliance_queries.py" />
+    <Compile Include="compliance_view.py" />
     <Compile Include="create_user.py" />
     <Compile Include="dashboard_queries.py" />
     <Compile Include="db.py" />
@@ -35,6 +37,12 @@
     <Compile Include="leave_queries.py" />
     <Compile Include="leave_view.py" />
     <Compile Include="log_in.py" />
+    <Compile Include="recognition_queries.py" />
+    <Compile Include="recognition_form.py" />
+    <Compile Include="recognition_view.py" />
+    <Compile Include="review_scheduling.py" />
+    <Compile Include="review_type_form.py" />
+    <Compile Include="review_type_queries.py" />
     <Compile Include="session.py" />
     <Compile Include="PyVA.py" />
     <Compile Include="schema.txt" />
