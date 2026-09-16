@@ -29,6 +29,9 @@ from employee_form import EmployeeFormFrame
 from employee_list import EmployeeListFrame
 from leave_view import LeaveViewFrame
 from leave_form import LogLeaveFrame
+from compliance_view import ComplianceViewFrame
+from recognition_view import RecognitionViewFrame
+from recognition_form import LogRecognitionFrame
 
 
 # =========================================================
@@ -127,8 +130,8 @@ class MainWindow(tk.Tk):
             ("Dashboard", self.show_dashboard),
             ("Employees", self.show_employee_list),
             ("Leave", self.show_leave_view),
-            ("Compliance Reviews", self.show_placeholder("Compliance Reviews")),
-            ("Recognition", self.show_placeholder("Recognition")),
+            ("Compliance Reviews", self.show_compliance_view),
+            ("Recognition", self.show_recognition_view),
             ("Notes", self.show_placeholder("Notes")),
         ]
         for label, cmd in nav_buttons:
@@ -185,6 +188,24 @@ class MainWindow(tk.Tk):
     def show_log_leave(self):
         self._clear_content()
         form = LogLeaveFrame(self.content, session=self.session, on_saved=self.show_leave_view)
+        form.pack(fill="both", expand=True)
+
+    def show_compliance_view(self):
+        self._clear_content()
+        view = ComplianceViewFrame(self.content, session=self.session)
+        view.pack(fill="both", expand=True)
+
+    def show_recognition_view(self):
+        self._clear_content()
+        view = RecognitionViewFrame(
+            self.content, session=self.session,
+            on_log_recognition=self.show_log_recognition,
+        )
+        view.pack(fill="both", expand=True)
+
+    def show_log_recognition(self):
+        self._clear_content()
+        form = LogRecognitionFrame(self.content, session=self.session, on_saved=self.show_recognition_view)
         form.pack(fill="both", expand=True)
 
     def show_dashboard(self):
